@@ -1,1 +1,21 @@
-jjcx
+# Koschei Web3
+
+Standalone components from Koschei Web3 Hub for Solana event normalization and ARVIS evidence validation.
+
+- [Solana event normalizer](oss/event-normalizer/README.md) for Pump-style and Raydium-style observations
+- [ARVIS signed-verdict schema](oss/schemas/signed-verdict.schema.json) and [TypeScript structure checker](oss/verifier/typescript/index.ts)
+- [ARVIS dossier integrity checker](oss/verifier/typescript/verify-dossier.mjs) for dossier structure and bundle hashes
+- [Koschei Fabric contracts](fabric/contracts) for component manifests and security case envelopes
+
+The verdict structure checker validates signature metadata. Cryptographic signature verification requires a trusted public key and independent verification.
+
+## Quick start
+
+```sh
+cd oss/event-normalizer
+npm ci
+npm run check
+npm test
+```
+
+See [LICENSE](LICENSE) for the license.
