@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="description" content="Run the Koschei Transaction Guard B2B shadow simulation against a serialized Solana transaction before signing. No custody, signing, submission, or browser-persisted API key.">
+<meta name="theme-color" content="#02050a">
+<title>Transaction Guard · Koschei ARVIS</title>
+<link rel="stylesheet" href="/css/koschei.css?v=1">
+</head>
+<body class="safety-page koschei-v2">
+<main class="safety-wrap">
+<nav class="safety-nav"><a class="safety-brand" href="/"><span class="safety-mark">K</span><span><strong>Koschei ARVIS</strong><small>B2B Transaction Guard</small></span></a><div class="safety-links"><a class="safety-btn" href="/transaction-shield">Public Transaction Shield</a><a class="safety-btn" href="/scan?mode=deep">Deep Scan</a><a class="safety-btn" href="/developers">Developers</a><a class="safety-btn" href="/account">API Keys</a></div></nav>
+<header class="safety-hero"><span class="safety-kicker">B2B TRANSACTION GUARD · SHADOW MODE</span><h1>Run the policy evidence before your system signs.</h1><p>This operator surface calls the authenticated Transaction Guard endpoint with a serialized Solana transaction and an API key you enter for the current page session. Koschei simulates and evaluates the transaction but does not sign, submit, store, or automatically block it.</p><div class="safety-proofline"><span class="safety-chip">X-API-Key endpoint</span><span class="safety-chip">Read-only simulation</span><span class="safety-chip">No transaction send</span><span class="safety-chip">API key not persisted</span><span class="safety-chip warn">Missing signal ≠ safe</span></div></header>
+<section class="firewall-shell">
+<article class="safety-panel">
+<span class="safety-kicker">GUARD INPUT</span><h2>Evaluate a serialized transaction.</h2><p>The API key stays only in the form field and JavaScript call stack. This UI does not write it to localStorage, sessionStorage, cookies, or URLs.</p>
+<form class="safety-form" id="firewallForm">
+<div class="safety-field"><label for="apiKey">Koschei API key</label><input class="safety-input safety-mono" id="apiKey" type="password" autocomplete="off" required placeholder="kch_live_..."><div class="firewall-api-note"><b>Not persisted:</b> reload the page and the field is empty.</div></div>
+<div class="safety-field"><label for="network">Network</label><select class="safety-select" id="network"><option value="solana-mainnet">Solana Mainnet</option></select></div>
+<div class="safety-field"><label for="encoding">Encoding</label><select class="safety-select" id="encoding"><option value="base64">Base64</option></select></div>
+<div class="safety-field"><label for="wallet">Wallet · optional context</label><input class="safety-input safety-mono" id="wallet" autocomplete="off" placeholder="Optional signing-wallet context"></div>
+<div class="safety-field"><label for="transaction">Base64 serialized transaction</label><textarea class="safety-textarea safety-mono" id="transaction" required spellcheck="false" placeholder="AQAAAAAAAA..."></textarea></div>
+<button class="safety-btn primary" id="runButton" type="submit">Simulate transaction</button>
+</form>
+<div id="firewallStatus" class="firewall-status" role="status" aria-live="polite" hidden></div>
+<div class="safety-boundary"><b>Shadow-mode boundary:</b> no wallet connect, seed phrase, private key, transaction signature, send authority, or automatic enforcement is created by this page.</div>
+</article>
+<aside class="safety-panel firewall-result" id="firewallResult" aria-live="polite"><div class="safety-score"><strong>—</strong><small>Waiting for Transaction Guard evidence</small></div><div class="safety-warning"><b>Fail-closed presentation</b> Missing action, risk, programs, logs, compute usage, or provider evidence remains WITHHOLD / UNAVAILABLE instead of becoming zero risk or signing permission.</div></aside>
+</section>
+<section class="safety-panel" style="margin-top:14px"><span class="safety-kicker">DECISION CONTRACT</span><h2>The engine result remains visible. Signing guidance is stricter.</h2><div class="safety-rules"><div class="safety-rule"><b>ALLOW</b><span>Displayed as PREFLIGHT CLEAR only when a real risk index exists and risk level is explicitly LOW.</span></div><div class="safety-rule"><b>WARN / BLOCK</b><span>Reviewable or deterministic blocking evidence remains visible and is never softened by the UI.</span></div><div class="safety-rule"><b>WITHHOLD</b><span>Provider outage or required evidence gap. No missing signal is interpreted as safe.</span></div></div></section>
+<p class="safety-fine">Transaction Guard is technical decision support for integration operators. Keep production API keys server-side in real applications; this browser surface is an operator testing tool, not a pattern for embedding server credentials in a public frontend.</p>
+<footer class="safety-footer"><span>Koschei Transaction Guard · B2B shadow simulation</span><nav><a href="/transaction-shield">Public Shield</a><a href="/scan?mode=deep">Deep Scan</a><a href="/developers">Developers</a><a href="/docs/api">API Docs</a></nav></footer>
+</main>
+<script src="/js/koschei-global-shell.js?v=4"></script>
+<script src="/js/koschei-product-v2.js?v=3"></script>
+<script src="/js/transaction-firewall-v2.js?v=1"></script>
+</body>
+</html>

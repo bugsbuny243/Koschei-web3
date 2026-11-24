@@ -1,0 +1,441 @@
+package openapi
+
+import (
+	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+type Route struct {
+	Pattern         string
+	Path            string
+	Methods         []string
+	AuthTier        string
+	InventoryAuth   string
+	InventoryGroup  string
+	InventorySource string
+	Source          string
+}
+
+type Document map[string]any
+
+func Generate(sourceDir string) ([]byte, []Route, error) {
+	routes, err := RegisteredAPIRoutes(sourceDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	inventory, err := RouteInventory(sourceDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	document := buildDocument(routes, inventory)
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, nil, err
+	}
+	return append(encoded, '\n'), routes, nil
+}
+
+func RegisteredAPIRoutes(sourceDir string) ([]Route, error) {
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return nil, err
+	}
+	byPath := map[string]*Route{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		filename := filepath.Join(sourceDir, entry.Name())
+		parsed, err := parser.ParseFile(token.NewFileSet(), filename, nil, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", filename, err)
+		}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) < 2 || !isHandleFunc(call.Fun) {
+				return true
+			}
+			pattern, ok := stringLiteral(call.Args[0])
+			if !ok || !strings.HasPrefix(pattern, "/api/") {
+				return true
+			}
+			path := normalizePattern(pattern)
+			methods := methodsFromExpression(call.Args[1])
+			if len(methods) == 0 {
+				methods = fallbackMethods(path)
+			}
+			route := byPath[path]
+			if route == nil {
+				route = &Route{
+					Pattern:         pattern,
+					Path:            path,
+					AuthTier:        authTier(path, filename),
+					InventoryGroup:  routeTag(path),
+					InventorySource: "boot_chain_fallback",
+					Source:          filepath.Base(filename),
+				}
+				byPath[path] = route
+			}
+			route.Methods = uniqueSorted(append(route.Methods, methods...))
+			return true
+		})
+	}
+	routes := make([]Route, 0, len(byPath))
+	for _, route := range byPath {
+		routes = append(routes, *route)
+	}
+	sort.Slice(routes, func(i, j int) bool { return routes[i].Path < routes[j].Path })
+	inventory, err := RouteInventory(sourceDir)
+	if err != nil {
+		return nil, err
+	}
+	return enrichRoutesWithInventory(routes, inventory), nil
+}
+
+func isHandleFunc(expression ast.Expr) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	return ok && selector.Sel.Name == "HandleFunc"
+}
+
+func stringLiteral(expression ast.Expr) (string, bool) {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(literal.Value)
+	return value, err == nil
+}
+
+func methodsFromExpression(expression ast.Expr) []string {
+	methods := []string{}
+	ast.Inspect(expression, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		identifier, ok := call.Fun.(*ast.Ident)
+		if !ok || identifier.Name != "method" {
+			return true
+		}
+		if method := methodName(call.Args[0]); method != "" {
+			methods = append(methods, method)
+		}
+		return true
+	})
+	return uniqueSorted(methods)
+}
+
+func methodName(expression ast.Expr) string {
+	if value, ok := stringLiteral(expression); ok {
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	mapping := map[string]string{
+		"MethodGet": "get", "MethodPost": "post", "MethodPut": "put",
+		"MethodPatch": "patch", "MethodDelete": "delete", "MethodHead": "head",
+	}
+	return mapping[selector.Sel.Name]
+}
+
+func normalizePattern(pattern string) string {
+	overrides := map[string]string{
+		"/api/account/api-keys/":    "/api/account/api-keys/{id}/revoke",
+		"/api/owner/radar/jobs/":    "/api/owner/radar/jobs/{id}",
+		"/api/v1/radar/jobs/":       "/api/v1/radar/jobs/{id}",
+		"/api/jobs/":                "/api/jobs/{id}",
+		"/api/v1/dossier/":          "/api/v1/dossier/{case_ref}",
+		"/api/watchlist/":           "/api/watchlist/{id}",
+		"/api/webhooks/deliveries/": "/api/webhooks/deliveries/{id}",
+		"/api/webhooks/":            "/api/webhooks/{id}",
+	}
+	if value := overrides[pattern]; value != "" {
+		return value
+	}
+	return strings.TrimSuffix(pattern, "/")
+}
+
+func fallbackMethods(path string) []string {
+	overrides := map[string][]string{
+		"/api/account/api-keys":         {"get", "post"},
+		"/api/owner/chat":               {"post"},
+		"/api/owner/radar/sources":      {"get"},
+		"/api/owner/feedback":           {"get", "post"},
+		"/api/watchlist":                {"get", "post"},
+		"/api/watchlist/{id}":           {"delete"},
+		"/api/watchlist/alerts":         {"get"},
+		"/api/webhooks":                 {"get", "post"},
+		"/api/webhooks/{id}":            {"delete", "patch"},
+		"/api/webhooks/security-alerts": {"get", "post"},
+		"/api/webhooks/deliveries":      {"get"},
+		"/api/webhooks/deliveries/{id}": {"get", "post"},
+	}
+	if methods := overrides[path]; len(methods) > 0 {
+		return methods
+	}
+	if strings.HasPrefix(path, "/api/owner/defense/") {
+		return []string{"get", "post"}
+	}
+	return []string{"get", "post"}
+}
+
+func authTier(path, filename string) string {
+	switch {
+	case strings.HasPrefix(path, "/api/owner/"):
+		return "owner_session"
+	case strings.HasPrefix(path, "/api/v1/scan/") || path == "/api/v1/usage" || strings.HasPrefix(path, "/api/v1/shield/") || strings.HasPrefix(path, "/api/v1/defense/") || strings.HasPrefix(path, "/api/v1/execution-assurance/"):
+		return "api_key_plus_professional_entitlement"
+	case strings.HasPrefix(path, "/api/webhooks"):
+		return "customer_session_plus_professional_entitlement"
+	case strings.HasPrefix(path, "/api/watchlist"):
+		return "customer_session_plus_professional_entitlement"
+	case path == "/api/customer/web3/transaction-preflight" || path == "/api/customer/web3/transaction-state-recheck":
+		return "customer_session_plus_professional_entitlement"
+	case strings.HasPrefix(path, "/api/account/"):
+		return "customer_session_plus_professional_entitlement"
+	case strings.HasPrefix(path, "/api/auth/wallet/") || path == "/api/auth/premium-access" || path == "/api/me" || path == "/api/web3/health/logs" || path == "/api/v1/radar/jobs/{id}" || path == "/api/jobs/{id}":
+		return "customer_session"
+	case path == "/api/v1/radar/feed" || path == "/api/v1/radar/creator-intelligence" || path == "/api/v1/radar/actor-intelligence" || path == "/api/v1/radar/graph" || path == "/api/v1/radar/exposure" || path == "/api/v1/radar/court":
+		return "customer_session_plus_professional_entitlement"
+	case path == "/api/arvis/preflight" || path == "/api/token/scan" || path == "/api/v1/radar/check" || path == "/api/v1/radar/jobs" || path == "/api/v1/radar/detail" || path == "/api/jobs/token-scan" || path == "/api/v1/token/extensions" || path == "/api/v1/address-poisoning/check" || strings.HasPrefix(path, "/api/agent/") && path != "/api/agent/health":
+		return "customer_session_plus_professional_entitlement"
+	case strings.Contains(filename, "dossier") && strings.HasPrefix(path, "/api/v1/dossier/"):
+		return "dossier_access_contract"
+	default:
+		return "public"
+	}
+}
+
+func uniqueSorted(values []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func buildDocument(routes []Route, inventory []InventoryRoute) Document {
+	paths := map[string]any{}
+	for _, route := range routes {
+		pathItem := map[string]any{}
+		for _, method := range route.Methods {
+			pathItem[method] = operation(route, method)
+		}
+		paths[route.Path] = pathItem
+	}
+	excludedInventory := excludedInventoryOperations(routes, inventory)
+	return Document{
+		"openapi": "3.1.0",
+		"info": map[string]any{
+			"title":   "Koschei Web3 Security API",
+			"version": "2026-08-02",
+			"description": "Evidence-first API contract generated from the registered server boot chain. " +
+				"Static files, HTML pages, robots.txt and ads.txt are intentionally excluded; every registered /api/ route is included. " +
+				"route_inventory.go supplies grouping and auth semantics only for matching live registrations. Inventory operations not registered in the boot chain are excluded from paths and listed in x-koschei-excluded-unregistered-inventory-operations. " +
+				"WITHHOLD is a valid verdict when required evidence is unavailable and carries unmet_evidence_reasons. Evidence counts are never quality scores.",
+		},
+		"x-koschei-excluded-unregistered-inventory-operations": excludedInventory,
+		"servers": []any{map[string]any{"url": "/"}},
+		"paths":   paths,
+		"components": map[string]any{
+			"securitySchemes": map[string]any{
+				"sessionBearer":   map[string]any{"type": "http", "scheme": "bearer", "bearerFormat": "session"},
+				"ownerSession":    map[string]any{"type": "apiKey", "in": "cookie", "name": "koschei_owner_session"},
+				"developerAPIKey": map[string]any{"type": "apiKey", "in": "header", "name": "X-API-Key"},
+			},
+			"schemas": schemas(),
+		},
+	}
+}
+
+func operation(route Route, method string) map[string]any {
+	group := strings.TrimSpace(route.InventoryGroup)
+	if group == "" {
+		group = routeTag(route.Path)
+	}
+	description := "Registered boot-chain operation. Required evidence that cannot be produced yields a successful withheld result rather than an inferred verdict."
+	operationResponses := responses(route.AuthTier)
+	requestSchemaRef := "#/components/schemas/GenericRequest"
+	requestBodyRequired := false
+	if route.Path == "/api/customer/web3/transaction-state-recheck" && method == "post" {
+		description = "Verifies a signed state-bound Transaction Guard permit and re-reads only the bounded witnessed Solana account set immediately before signing. Proceed only when the HTTP response succeeds and the body reports ok=true and safe_to_proceed=true. Expired permits return 409 and unavailable or incomplete current-state evidence returns 503; both require withholding the prior preflight decision."
+		operationResponses["409"] = response("State-bound permit expired; run a fresh Transaction Guard simulation before signing.", "#/components/schemas/EvidenceResponse")
+		operationResponses["503"] = response("Current witnessed account-state evidence or the required recheck policy is unavailable or incomplete; withhold the prior preflight decision and resimulate.", "#/components/schemas/EvidenceResponse")
+		requestSchemaRef = "#/components/schemas/TransactionStateRecheckRequest"
+		requestBodyRequired = true
+	}
+	operation := map[string]any{
+		"operationId":              operationID(method, route.Path),
+		"summary":                  strings.ToUpper(method) + " " + route.Path,
+		"description":              description,
+		"tags":                     []string{group},
+		"x-koschei-auth-tier":      route.AuthTier,
+		"x-koschei-inventory-auth": route.InventoryAuth,
+		"x-koschei-route-source":   route.InventorySource,
+		"parameters":               pathParameters(route.Path),
+		"responses":                operationResponses,
+		"security":                 security(route.AuthTier),
+	}
+	if method == "post" || method == "put" || method == "patch" {
+		operation["requestBody"] = map[string]any{
+			"required": requestBodyRequired,
+			"content":  map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": requestSchemaRef}}},
+		}
+	}
+	return operation
+}
+
+func pathParameters(path string) []any {
+	parameters := []any{}
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if strings.HasPrefix(part, "{") && strings.HasSuffix(part, "}") {
+			name := strings.TrimSuffix(strings.TrimPrefix(part, "{"), "}")
+			parameters = append(parameters, map[string]any{
+				"name": name, "in": "path", "required": true,
+				"schema": map[string]any{"type": "string", "minLength": 1},
+			})
+		}
+	}
+	return parameters
+}
+
+func responses(auth string) map[string]any {
+	items := map[string]any{
+		"200": response("Evidence-backed result, including valid WITHHOLD outcomes.", "#/components/schemas/EvidenceResponse"),
+		"400": response("Invalid request.", "#/components/schemas/ErrorResponse"),
+		"405": response("Method not allowed.", "#/components/schemas/ErrorResponse"),
+		"429": response("Rate or quota limit reached.", "#/components/schemas/ErrorResponse"),
+		"500": response("Internal failure; no unsupported verdict is emitted.", "#/components/schemas/ErrorResponse"),
+	}
+	if auth != "public" {
+		items["401"] = response("Identity credential missing or invalid.", "#/components/schemas/ErrorResponse")
+		items["403"] = response("Authenticated identity lacks the required access tier.", "#/components/schemas/ErrorResponse")
+	}
+	return items
+}
+
+func response(description, reference string) map[string]any {
+	return map[string]any{
+		"description": description,
+		"content":     map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": reference}}},
+	}
+}
+
+func security(auth string) []any {
+	switch auth {
+	case "owner_session":
+		return []any{map[string]any{"ownerSession": []string{}}}
+	case "api_key_plus_professional_entitlement", "api_key_plus_enterprise_entitlement":
+		return []any{map[string]any{"developerAPIKey": []string{}}}
+	case "customer_session", "customer_session_plus_professional_entitlement", "dossier_access_contract":
+		return []any{map[string]any{"sessionBearer": []string{}}}
+	default:
+		return []any{}
+	}
+}
+
+func schemas() map[string]any {
+	return map[string]any{
+		"GenericRequest": map[string]any{
+			"type": "object", "additionalProperties": true,
+			"description": "Operation-specific JSON input. Unknown or missing required evidence inputs fail closed.",
+		},
+		"TransactionStateRecheckRequest": map[string]any{
+			"type":     "object",
+			"required": []string{"permit_token", "transaction", "state_witness"},
+			"properties": map[string]any{
+				"permit_token":  map[string]any{"type": "string", "minLength": 1, "description": "Signed state-bound Transaction Guard permit returned by the immediately preceding eligible preflight."},
+				"transaction":   map[string]any{"type": "string", "minLength": 1, "description": "The exact same serialized transaction bound by the permit."},
+				"network":       map[string]any{"type": "string", "enum": []string{"solana-mainnet"}, "default": "solana-mainnet"},
+				"state_witness": map[string]any{"$ref": "#/components/schemas/TransactionStateWitness"},
+			},
+			"additionalProperties": false,
+		},
+		"TransactionStateWitness": map[string]any{
+			"type":     "object",
+			"required": []string{"version", "status", "complete", "transaction_fingerprint", "pre_state_slot", "simulation_slot", "account_count", "account_root_sha256", "binding_hash", "accounts"},
+			"properties": map[string]any{
+				"version":                 map[string]any{"type": "string", "enum": []string{"koschei-transaction-state-witness-v1"}},
+				"status":                  map[string]any{"type": "string", "enum": []string{"complete"}},
+				"complete":                map[string]any{"type": "boolean", "enum": []any{true}},
+				"transaction_fingerprint": map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+				"pre_state_slot":          map[string]any{"type": "integer", "minimum": 1},
+				"simulation_slot":         map[string]any{"type": "integer", "minimum": 1},
+				"slot_spread":             map[string]any{"type": "integer", "minimum": 0},
+				"account_count":           map[string]any{"type": "integer", "minimum": 1, "maximum": 32},
+				"account_root_sha256":     map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+				"binding_hash":            map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+				"accounts":                map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"$ref": "#/components/schemas/TransactionStateWitnessAccount"}},
+				"limitations":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"additionalProperties": false,
+		},
+		"TransactionStateWitnessAccount": map[string]any{
+			"type":     "object",
+			"required": []string{"address", "present", "state_hash"},
+			"properties": map[string]any{
+				"address":    map[string]any{"type": "string", "minLength": 1},
+				"present":    map[string]any{"type": "boolean"},
+				"state_hash": map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+			},
+			"additionalProperties": false,
+		},
+		"EvidenceResponse": map[string]any{
+			"type":     "object",
+			"required": []string{"ok"},
+			"properties": map[string]any{
+				"ok":                     map[string]any{"type": "boolean"},
+				"verdict":                map[string]any{"$ref": "#/components/schemas/Verdict"},
+				"unmet_evidence_reasons": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"evidence":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": true}},
+				"data":                   map[string]any{"type": "object", "additionalProperties": true},
+			},
+			"additionalProperties": true,
+		},
+		"Verdict": map[string]any{
+			"type":        "string",
+			"enum":        []string{"allow", "block", "deny", "verified", "bounded", "missing", "withhold"},
+			"description": "WITHHOLD is an intended non-error outcome when required evidence cannot be produced.",
+		},
+		"ErrorResponse": map[string]any{
+			"type": "object", "required": []string{"error"},
+			"properties": map[string]any{
+				"error":   map[string]any{"type": "string"},
+				"code":    map[string]any{"type": "string"},
+				"details": map[string]any{"type": "object", "additionalProperties": true},
+			},
+			"additionalProperties": true,
+		},
+	}
+}
+
+func operationID(method, path string) string {
+	replacer := strings.NewReplacer("/", "_", "{", "", "}", "", "-", "_")
+	return strings.Trim(replacer.Replace(method+"_"+path), "_")
+}
+
+func routeTag(path string) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return "api"
+}

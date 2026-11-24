@@ -1,6 +1,6 @@
 # Koschei Web3
 
-Standalone components from Koschei Web3 Hub for Solana event normalization and ARVIS evidence validation.
+Koschei Web3 provides a Go API and web interface for Solana risk intelligence, ARVIS evidence validation, and transaction screening.
 
 - [Solana event normalizer](oss/event-normalizer/README.md) for Pump-style and Raydium-style observations
 - [ARVIS signed-verdict schema](oss/schemas/signed-verdict.schema.json) and [TypeScript structure checker](oss/verifier/typescript/index.ts)
@@ -9,7 +9,18 @@ Standalone components from Koschei Web3 Hub for Solana event normalization and A
 
 The verdict structure checker validates signature metadata. Cryptographic signature verification requires a trusted public key and independent verification.
 
-## Quick start
+## Run the API locally
+
+Use Go 1.26.7 from the repository root.
+
+```sh
+cd koschei/api
+go run .
+```
+
+Open http://localhost:8080. The API starts in stateless mode by default. See the [environment example](.env.example) for database and provider configuration and the [OpenAPI document](koschei/api/openapi.yaml) for available routes. The optional owner Defense OS supports static analysis and program monitoring.
+
+## Try the event normalizer
 
 ```sh
 cd oss/event-normalizer

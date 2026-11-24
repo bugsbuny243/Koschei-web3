@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Check a Solana recipient against recent contact evidence and trusted addresses before sending. Koschei ARVIS Recipient Shield is read-only and never asks for wallet secrets.">
+<meta name="theme-color" content="#02050a">
+<title>Recipient Shield · Koschei ARVIS</title>
+<link rel="canonical" href="https://tradepigloball.co/address-poisoning-shield">
+<link rel="stylesheet" href="/css/koschei.css?v=1">
+</head>
+<body class="safety-page koschei-v2">
+<main class="safety-wrap">
+<nav class="safety-nav">
+<a class="safety-brand" href="/"><span class="safety-mark">K</span><span><strong>Koschei ARVIS</strong><small>Recipient Shield</small></span></a>
+<div class="safety-links"><a class="safety-btn" href="/safe-check">Safe Check</a><a class="safety-btn" href="/transaction-shield">Transaction Shield</a><a class="safety-btn" href="/scan?mode=deep">Deep Scan</a><a class="safety-btn" href="/dashboard">Workspace</a></div>
+</nav>
+<header class="safety-hero">
+<span class="safety-kicker">PRE-SEND RECIPIENT PROTECTION · ADDRESS POISONING</span>
+<h1>Verify the full recipient before you send.</h1>
+<p>Recipient Shield compares the candidate address with recent Solana contact evidence and any trusted addresses you provide. It looks for visible prefix/suffix collisions and lookalike patterns used in address-poisoning attacks. Engine policy and signing guidance stay separate: incomplete contact evidence never becomes a green clear-send state.</p>
+<div class="safety-proofline"><span class="safety-chip">Account session required</span><span class="safety-chip">No seed phrase</span><span class="safety-chip">No private key</span><span class="safety-chip">No signature request</span><span class="safety-chip warn">Missing contact evidence ≠ safe</span></div>
+</header>
+<div id="recipientNotice" class="safety-warning recipient-notice" role="status" aria-live="polite" hidden></div>
+<section class="safety-grid">
+<article class="safety-panel">
+<span class="safety-kicker">RECIPIENT INPUT</span>
+<h2>Compare before sending.</h2>
+<p>Use the full addresses. Truncated wallet displays are exactly what poisoning attacks try to exploit.</p>
+<form class="safety-form" id="recipientForm">
+<div class="safety-field"><label for="wallet">Your wallet</label><input class="safety-input safety-mono" id="wallet" autocomplete="off" required placeholder="Your Solana wallet address"></div>
+<div class="safety-field"><label for="candidate">Candidate recipient</label><input class="safety-input safety-mono" id="candidate" autocomplete="off" required placeholder="Full recipient address to verify"></div>
+<div class="safety-field"><label for="contacts">Trusted addresses · optional</label><textarea class="safety-textarea safety-mono" id="contacts" spellcheck="false" placeholder="One trusted address per line"></textarea></div>
+<div class="safety-actions"><button class="safety-btn primary" id="recipientRun" type="submit">Check recipient</button><a class="safety-btn" href="/safe-check">Open Safe Check</a></div>
+</form>
+<div class="safety-boundary"><b>Read-only boundary:</b> Recipient Shield reads public addresses and recent contact evidence. It does not request a seed phrase, private key, wallet approval, transaction signature, or transfer authority.</div>
+<div class="safety-rules"><div class="safety-rule"><b>Prefix collision</b><span>Detects candidates that imitate the visible beginning of a known address.</span></div><div class="safety-rule"><b>Suffix collision</b><span>Checks the visible tail attackers often copy to fool shortened wallet displays.</span></div><div class="safety-rule"><b>Contact evidence</b><span>Separates collected RPC contact evidence from limited or unavailable coverage.</span></div></div>
+</article>
+<aside class="safety-panel safety-result" id="recipientResult" aria-live="polite">
+<div class="safety-score"><strong>—</strong><small>Waiting for recipient evidence</small></div>
+<div class="safety-warning"><b>Fail-closed guidance</b> A missing risk score, unknown engine policy, or incomplete RPC contact graph cannot become permission to send.</div>
+</aside>
+</section>
+<section class="safety-panel" style="margin-top:14px">
+<span class="safety-kicker">HOW TO READ THE RESULT</span>
+<h2>Policy is evidence. Sending guidance is stricter.</h2>
+<div class="safety-rules"><div class="safety-rule"><b>DO NOT SEND</b><span>Strong lookalike evidence or a blocking engine policy. Verify through a trusted out-of-band channel.</span></div><div class="safety-rule"><b>VERIFY FULL ADDRESS</b><span>Warning state, or engine ALLOW without the complete low-risk RPC contact evidence required for a clear display.</span></div><div class="safety-rule"><b>PREFLIGHT CLEAR</b><span>Displayed only when engine policy is ALLOW, risk is explicitly LOW, a real risk index exists, and RPC contact evidence was collected.</span></div></div>
+</section>
+<p class="safety-fine">Recipient Shield is technical decision support. It does not accuse a wallet owner of fraud or wrongdoing, and it does not replace independent confirmation of a material transfer destination.</p>
+<footer class="safety-footer"><span>Koschei Recipient Shield · pre-send address verification</span><nav><a href="/">Home</a><a href="/safe-check">Safe Check</a><a href="/transaction-shield">Transaction Shield</a><a href="/cases">Evidence Center</a></nav></footer>
+</main>
+<script src="/js/koschei-auth.js?v=33"></script>
+<script src="/js/koschei-global-shell.js?v=4"></script>
+<script src="/js/koschei-product-v2.js?v=3"></script>
+<script src="/js/address-poisoning-shield-v2.js?v=1"></script>
+</body>
+</html>

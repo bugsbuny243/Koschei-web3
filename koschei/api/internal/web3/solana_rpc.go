@@ -1,0 +1,465 @@
+package web3
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"koschei/api/internal/cache"
+	"koschei/api/internal/runtimecfg"
+)
+
+type SolanaRPC struct {
+	Client        *http.Client
+	Cache         cache.Cache
+	KeyPrefix     string
+	AlchemyAPIKey string
+
+	limitMu       sync.Mutex
+	nextRequestAt time.Time
+	cooldowns     map[string]time.Time
+}
+
+type solanaRPCEnvelope struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type solanaRPCStatusError struct {
+	Status     int
+	RetryAfter string
+}
+
+func (e *solanaRPCStatusError) Error() string {
+	return fmt.Sprintf("rpc status %d", e.Status)
+}
+
+func NewSolanaRPC(c cache.Cache) *SolanaRPC {
+	if c == nil {
+		c = cache.NewNoop()
+	}
+	prefix := strings.TrimSpace(os.Getenv("CACHE_KEY_PREFIX"))
+	if prefix == "" {
+		prefix = "koschei"
+	}
+	return &SolanaRPC{Client: &http.Client{Timeout: 12 * time.Second}, Cache: c, KeyPrefix: prefix, AlchemyAPIKey: os.Getenv("ALCHEMY_API_KEY")}
+}
+
+func (s *SolanaRPC) URL(network string) string {
+	return configuredSolanaRPCURL(network, s.AlchemyAPIKey)
+}
+
+func configuredSolanaRPCURL(network, apiKey string) string {
+	cfg := runtimecfg.Load()
+	if strings.TrimSpace(network) == "" {
+		network = cfg.SolanaNetwork
+	}
+	if isSolanaMainnet(network) {
+		if value := strings.TrimSpace(os.Getenv("SOLANA_RPC_URL")); value != "" {
+			return value
+		}
+		provider := cfg.Web3Provider
+		if provider == "auto" && cfg.SecurityProvider != "auto" {
+			provider = cfg.SecurityProvider
+		}
+		for _, key := range preferredMainnetRPCKeys(provider) {
+			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+				return value
+			}
+		}
+		if strings.TrimSpace(apiKey) != "" {
+			return "https://solana-mainnet.g.alchemy.com/v2/" + strings.TrimSpace(apiKey)
+		}
+		return "https://api.mainnet-beta.solana.com"
+	}
+	for _, key := range []string{"SOLANA_DEVNET_RPC_URL", "ALCHEMY_SOLANA_DEVNET_RPC_URL"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		return "https://solana-devnet.g.alchemy.com/v2/" + strings.TrimSpace(apiKey)
+	}
+	return "https://api.devnet.solana.com"
+}
+
+func preferredMainnetRPCKeys(provider string) []string {
+	base := map[string]string{
+		"alchemy":   "ALCHEMY_SOLANA_RPC_URL",
+		"helius":    "HELIUS_SOLANA_RPC_URL",
+		"quicknode": "QUICKNODE_SOLANA_RPC_URL",
+	}
+	ordered := []string{}
+	if key := base[strings.ToLower(strings.TrimSpace(provider))]; key != "" {
+		ordered = append(ordered, key)
+	}
+	for _, key := range []string{"ALCHEMY_SOLANA_RPC_URL", "HELIUS_SOLANA_RPC_URL", "QUICKNODE_SOLANA_RPC_URL"} {
+		found := false
+		for _, existing := range ordered {
+			if existing == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ordered = append(ordered, key)
+		}
+	}
+	return ordered
+}
+
+func SolanaRPCURL(network, apiKey string) string {
+	return configuredSolanaRPCURL(network, apiKey)
+}
+
+func SolanaRPCFallbackURL(network string) string {
+	cfg := runtimecfg.Load()
+	if strings.TrimSpace(network) == "" {
+		network = cfg.SolanaNetwork
+	}
+	if isSolanaMainnet(network) {
+		primaryURL := configuredSolanaRPCURL(network, strings.TrimSpace(os.Getenv("ALCHEMY_API_KEY")))
+		if explicit := strings.TrimSpace(os.Getenv("SOLANA_RPC_FALLBACK_URL")); explicit != "" && explicit != strings.TrimSpace(primaryURL) {
+			return explicit
+		}
+		primaryHost := RPCProviderHost(primaryURL)
+		provider := cfg.Web3Provider
+		if provider == "auto" && cfg.SecurityProvider != "auto" {
+			provider = cfg.SecurityProvider
+		}
+		candidates := []string{}
+		for _, key := range preferredMainnetRPCKeys(provider) {
+			candidates = append(candidates, strings.TrimSpace(os.Getenv(key)))
+		}
+		if key := strings.TrimSpace(os.Getenv("ALCHEMY_API_KEY")); key != "" {
+			candidates = append(candidates, "https://solana-mainnet.g.alchemy.com/v2/"+key)
+		}
+		candidates = append(candidates, "https://api.mainnet-beta.solana.com")
+		for _, candidate := range candidates {
+			if candidate == "" || RPCProviderHost(candidate) == primaryHost {
+				continue
+			}
+			return candidate
+		}
+		return "https://api.mainnet-beta.solana.com"
+	}
+	if value := strings.TrimSpace(os.Getenv("SOLANA_DEVNET_RPC_FALLBACK_URL")); value != "" {
+		return value
+	}
+	return "https://api.devnet.solana.com"
+}
+
+func solanaRPCEndpointTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("SOLANA_RPC_ENDPOINT_TIMEOUT_MS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 50 && value <= 30000 {
+			return time.Duration(value) * time.Millisecond
+		}
+	}
+	return 6 * time.Second
+}
+
+func solanaRPCMinInterval() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("SOLANA_RPC_MIN_INTERVAL_MS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 0 && value <= 5000 {
+			return time.Duration(value) * time.Millisecond
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		return 500 * time.Millisecond
+	}
+	return 0
+}
+
+func solanaRPC429Cooldown(retryAfter string) time.Duration {
+	cooldown := 60 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("SOLANA_RPC_429_COOLDOWN_SECONDS")); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value >= 1 && value <= 3600 {
+			cooldown = time.Duration(value) * time.Second
+		}
+	}
+	retryAfter = strings.TrimSpace(retryAfter)
+	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+		providerDelay := time.Duration(seconds) * time.Second
+		if providerDelay > cooldown {
+			cooldown = providerDelay
+		}
+	}
+	if when, err := http.ParseTime(retryAfter); err == nil {
+		if providerDelay := time.Until(when); providerDelay > cooldown {
+			cooldown = providerDelay
+		}
+	}
+	return cooldown
+}
+
+func isSolanaMainnet(network string) bool {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "solana-mainnet", "mainnet", "mainnet-beta":
+		return true
+	default:
+		return false
+	}
+}
+
+func uniqueRPCURLs(values ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (s *SolanaRPC) CacheKey(network, method string, params any) string {
+	b, _ := json.Marshal(params)
+	h := sha256.Sum256(b)
+	return fmt.Sprintf("%s:solana:%s:rpc:%s:%s", s.KeyPrefix, network, method, hex.EncodeToString(h[:]))
+}
+
+func TTLFor(method string, params any) time.Duration {
+	switch method {
+	case "getTokenSupply":
+		return time.Minute
+	case "getTokenLargestAccounts":
+		return 5 * time.Minute
+	case "getTransaction":
+		return 24 * time.Hour
+	case "getSignaturesForAddress":
+		return time.Minute
+	case "getAccountInfo":
+		return 30 * time.Second
+	default:
+		return 2 * time.Minute
+	}
+}
+
+func (s *SolanaRPC) Call(ctx context.Context, network, method string, params any, target any, ttl time.Duration) error {
+	if ttl <= 0 {
+		ttl = TTLFor(method, params)
+	}
+	key := s.CacheKey(network, method, params)
+	if ok, err := s.Cache.GetJSON(ctx, key, target); err == nil && ok {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		LogRPCFailure(method, s.URL(network), 0, err)
+		return err
+	}
+	client := s.Client
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	signaturePressure := solanaRPCSignaturePressureEnabled(method)
+	if signaturePressure {
+		if err := acquireSolanaRPCSignaturePressure(ctx); err != nil {
+			return err
+		}
+		defer releaseSolanaRPCSignaturePressure()
+	}
+
+	var lastErr error
+	endpointTimeout := solanaRPCEndpointTimeout()
+	endpoints := uniqueRPCURLs(s.URL(network), SolanaRPCFallbackURL(network))
+	for index, endpoint := range endpoints {
+		if signaturePressure {
+			if until, cooling := solanaRPCSignatureEndpointCooldown(endpoint); cooling {
+				lastErr = fmt.Errorf("solana signature rpc endpoint cooling down until %s", until.UTC().Format(time.RFC3339))
+				continue
+			}
+		}
+		if until, cooling := SolanaRPCProviderCooldown(endpoint); cooling {
+			lastErr = fmt.Errorf("solana rpc provider cooling down until %s", until.UTC().Format(time.RFC3339))
+			continue
+		}
+		if until, cooling := s.rpcEndpointCooldown(endpoint); cooling {
+			lastErr = fmt.Errorf("solana rpc endpoint cooling down until %s", until.UTC().Format(time.RFC3339))
+			continue
+		}
+		if err := s.waitForRPCSlot(ctx); err != nil {
+			return err
+		}
+		if err := WaitForSolanaRPCProviderSlot(ctx, endpoint); err != nil {
+			return err
+		}
+		attemptCtx, cancel := solanaRPCAttemptContext(ctx, endpointTimeout, len(endpoints)-index)
+		err := callSolanaRPC(attemptCtx, client, endpoint, method, body, target)
+		attemptErr := attemptCtx.Err()
+		cancel()
+		if err != nil {
+			lastErr = err
+			if statusErr, ok := err.(*solanaRPCStatusError); ok && statusErr.Status == http.StatusTooManyRequests {
+				delay := solanaRPC429Cooldown(statusErr.RetryAfter)
+				s.deferRPCEndpoint(endpoint, delay)
+				DeferSolanaRPCProvider(endpoint, delay)
+				if signaturePressure {
+					deferSolanaRPCSignatureEndpoint(endpoint, solanaRPCSignature429Cooldown(statusErr.RetryAfter))
+				}
+			} else if signaturePressure && ctx.Err() == nil && attemptErr != nil {
+				deferSolanaRPCSignatureEndpoint(endpoint, solanaRPCSignatureTimeoutCooldown())
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+		_ = s.Cache.SetJSON(ctx, key, target, ttl)
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("solana rpc endpoint unavailable")
+	}
+	return lastErr
+}
+
+func solanaRPCAttemptContext(ctx context.Context, configured time.Duration, endpointsRemaining int) (context.Context, context.CancelFunc) {
+	timeout := configured
+	if deadline, ok := ctx.Deadline(); ok && endpointsRemaining > 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return context.WithCancel(ctx)
+		}
+		fairShare := remaining / time.Duration(endpointsRemaining)
+		if timeout <= 0 || fairShare < timeout {
+			timeout = fairShare
+		}
+	}
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (s *SolanaRPC) waitForRPCSlot(ctx context.Context) error {
+	interval := solanaRPCMinInterval()
+	if interval <= 0 {
+		return nil
+	}
+	for {
+		now := time.Now()
+		s.limitMu.Lock()
+		next := s.nextRequestAt
+		if !next.After(now) {
+			s.nextRequestAt = now.Add(interval)
+			s.limitMu.Unlock()
+			return nil
+		}
+		delay := time.Until(next)
+		s.limitMu.Unlock()
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *SolanaRPC) rpcEndpointCooldown(endpoint string) (time.Time, bool) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return time.Time{}, false
+	}
+	now := time.Now()
+	s.limitMu.Lock()
+	defer s.limitMu.Unlock()
+	if s.cooldowns == nil {
+		return time.Time{}, false
+	}
+	until, ok := s.cooldowns[endpoint]
+	if !ok {
+		return time.Time{}, false
+	}
+	if !until.After(now) {
+		delete(s.cooldowns, endpoint)
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+func (s *SolanaRPC) deferRPCEndpoint(endpoint string, delay time.Duration) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || delay <= 0 {
+		return
+	}
+	until := time.Now().Add(delay)
+	s.limitMu.Lock()
+	if s.cooldowns == nil {
+		s.cooldowns = map[string]time.Time{}
+	}
+	if current := s.cooldowns[endpoint]; until.After(current) {
+		s.cooldowns[endpoint] = until
+	}
+	s.limitMu.Unlock()
+}
+
+func callSolanaRPC(ctx context.Context, client *http.Client, endpoint, method string, body []byte, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		LogRPCFailure(method, endpoint, 0, err)
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		LogRPCFailure(method, endpoint, 0, err)
+		return err
+	}
+	defer resp.Body.Close()
+	actualEndpoint := endpoint
+	if resp.Request != nil && resp.Request.URL != nil {
+		actualEndpoint = resp.Request.URL.String()
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		err := &solanaRPCStatusError{Status: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After")}
+		LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+		return err
+	}
+	var env solanaRPCEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+		return err
+	}
+	if env.Error != nil {
+		if env.Error.Code == http.StatusTooManyRequests {
+			err := &solanaRPCStatusError{Status: http.StatusTooManyRequests}
+			LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+			return err
+		}
+		err := fmt.Errorf("rpc error: %s", env.Error.Message)
+		LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+		return err
+	}
+	if len(env.Result) == 0 || string(env.Result) == "null" {
+		err := fmt.Errorf("rpc result unavailable")
+		LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+		return err
+	}
+	if err := json.Unmarshal(env.Result, target); err != nil {
+		LogRPCFailure(method, actualEndpoint, resp.StatusCode, err)
+		return err
+	}
+	return nil
+}

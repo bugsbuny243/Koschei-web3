@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Manage Enterprise Koschei webhook endpoints, one-time HMAC signing secrets, and delivery evidence through the current customer-session contract.">
+<meta name="theme-color" content="#02050a">
+<title>Enterprise Webhooks · Koschei ARVIS</title>
+<link rel="canonical" href="https://tradepigloball.co/webhooks">
+<link rel="stylesheet" href="/css/koschei.css?v=1">
+</head>
+<body class="webhook-page koschei-v2">
+<main class="webhook-wrap">
+<nav class="webhook-nav">
+<a class="webhook-brand" href="/"><span class="webhook-mark">K</span><span><strong>Koschei ARVIS</strong><small>Enterprise Webhook Delivery</small></span></a>
+<div class="webhook-links"><a class="webhook-btn" href="/watchlist">Watchlist</a><a class="webhook-btn" href="/developers">Developers</a><a class="webhook-btn" href="/pricing">Plans</a><a class="webhook-btn" href="/account">Account</a></div>
+</nav>
+<header class="webhook-hero">
+<span class="webhook-kicker">SIGNED DELIVERY · PERSISTENT QUEUE · CUSTOMER ENDPOINTS</span>
+<h1>Deliver watchlist evidence without changing verdict authority.</h1>
+<p>Enterprise webhook management sends existing Koschei watchlist alert payloads to customer HTTPS endpoints through the persistent delivery queue. Delivery transports existing watchlist alert evidence; it does not create, upgrade, or rewrite a verdict.</p>
+<div class="webhook-proofline"><span class="webhook-chip">Enterprise SaaS entitlement required</span><span class="webhook-chip">Server-owned endpoint limit</span><span class="webhook-chip">One-time plaintext secret</span><span class="webhook-chip warn">Delivery failure ≠ delivered</span></div>
+<div class="webhook-boundary"><b>Trust boundary:</b> endpoint capacity, event subscription, delivery status, retry state, and signing-secret lifecycle come from the server. The browser does not invent capacity, persist secrets, or interpret missing delivery state as success.</div>
+</header>
+<section class="webhook-layout">
+<aside class="webhook-panel">
+<span class="webhook-kicker">REGISTER ENDPOINT</span>
+<h2>Create an HTTPS delivery target.</h2>
+<p>The server validates the destination, applies the current default event subscription, encrypts the signing secret at rest, and returns the plaintext secret only on create or rotate.</p>
+<form id="webhookForm" class="webhook-form">
+<div class="webhook-field"><label for="webhookName">Endpoint name</label><input id="webhookName" class="webhook-input" maxlength="80" autocomplete="off" required placeholder="Production alert receiver"></div>
+<div class="webhook-field"><label for="webhookUrl">HTTPS endpoint</label><input id="webhookUrl" class="webhook-input" type="url" autocomplete="off" required placeholder="https://example.com/koschei/webhook"></div>
+<button id="webhookCreate" class="webhook-btn primary" type="submit">Create endpoint</button>
+</form>
+<div id="webhookNotice" class="webhook-notice" role="status" aria-live="polite" hidden></div>
+<div id="webhookSecretPanel" class="webhook-secret" hidden>
+<strong id="webhookSecretTitle">One-time signing secret</strong>
+<p>The plaintext value is returned only by create/rotate. This page removes it from the visible DOM after two minutes and does not save it in browser storage.</p>
+<code id="webhookSecretValue"></code>
+<button id="webhookCopySecret" class="webhook-btn" type="button">Copy secret</button>
+</div>
+<div class="webhook-docs">
+<div><b>Verify signature</b><span>Use the server-issued secret with the timestamp and raw request body. Reject stale timestamps in your own replay window.</span><code class="webhook-code">X-Koschei-Timestamp
+X-Koschei-Signature: v1=HMAC-SHA256</code></div>
+<div><b>Current event source</b><span>Subscriptions are normalized server-side. The endpoint list below shows the authoritative event_types returned for each endpoint.</span></div>
+<div><b>Automatic protection</b><span>Delivery failures and retry/dead-letter state remain server evidence. The console does not convert unavailable delivery data into success.</span></div>
+</div>
+</aside>
+<section class="webhook-panel">
+<div class="webhook-section-head"><div><span class="webhook-kicker">ENDPOINT INVENTORY</span><h2>Registered delivery targets</h2></div><span id="webhookCount" class="webhook-count">UNAVAILABLE</span></div>
+<div id="webhookEndpoints" class="webhook-list" aria-live="polite"><div class="webhook-empty">Loading endpoint evidence…</div></div>
+<div class="webhook-section-head" style="margin-top:22px"><div><span class="webhook-kicker">DELIVERY EVIDENCE</span><h2>Queue and outcome state</h2></div><div class="webhook-actions"><select id="deliveryStatus" class="webhook-select"><option value="">All statuses</option><option value="pending">Pending</option><option value="processing">Processing</option><option value="retry">Retry</option><option value="delivered">Delivered</option><option value="dead_letter">Dead letter</option></select><button id="webhookReload" class="webhook-btn" type="button">Reload</button></div></div>
+<div id="webhookDeliveries" class="webhook-list" aria-live="polite"><div class="webhook-empty">Loading delivery evidence…</div></div>
+</section>
+</section>
+<footer class="webhook-footer"><span>Koschei ARVIS · Enterprise webhook delivery evidence</span><nav><a href="/watchlist">Watchlist</a><a href="/developers">Developers</a><a href="/pricing">Plans</a></nav></footer>
+</main>
+<script src="/js/koschei-auth.js?v=33"></script>
+<script src="/js/koschei-global-shell.js?v=4"></script>
+<script src="/js/koschei-product-v2.js?v=3"></script>
+<script src="/js/webhooks-v2.js?v=1"></script>
+</body>
+</html>
